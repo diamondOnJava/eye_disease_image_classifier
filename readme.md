@@ -80,3 +80,141 @@
    - Интеграция в телемедицинские платформы для скрининга.  
 
 > **Критические замечания**: Датсет не подходит для задач детекции (bbox) или сегментации (маски) — только классификация. Для обобщения на другие этнические группы требуется дообучение на доп. данных.
+
+Для оценки качества CNN в задаче классификации заболеваний глазного дна рекомендуется использовать следующие метрики и подходы:
+
+### 1. Основные метрики классификации:
+- **Accuracy (Точность)**:
+  ```python
+  from sklearn.metrics import accuracy_score
+  accuracy = accuracy_score(true_labels, predictions)
+  ```
+  - Интерпретация: Общая доля верных предсказаний. Может быть ненадежна при дисбалансе классов.
+
+- **Precision, Recall, F1-score**:
+  ```python
+  from sklearn.metrics import classification_report
+  report = classification_report(true_labels, predictions, target_names=class_names)
+  print(report)
+  ```
+  - **Precision**: Точность (ложные срабатывания)
+  - **Recall**: Полнота (пропущенные случаи)
+  - **F1-score**: Гармоническое среднее precision и recall
+  - Особенно важны для классов с малым количеством примеров (например, "Pterygium")
+
+- **Confusion Matrix (Матрица ошибок)**:
+  ```python
+  from sklearn.metrics import confusion_matrix
+  import seaborn as sns
+  
+  cm = confusion_matrix(true_labels, predictions)
+  plt.figure(figsize=(12, 10))
+  sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+              xticklabels=class_names, 
+              yticklabels=class_names)
+  plt.xlabel('Predicted')
+  plt.ylabel('True')
+  plt.show()
+  ```
+  - Показывает, какие классы путает модель
+  - Идеально для выявления проблемных классов
+
+### 2. Метрики для многоклассовой классификации:
+- **Macro F1**: Среднее F1 по всем классам (важно для дисбаланса)
+- **Weighted F1**: Среднее F1 с весами по количеству примеров
+- **Kappa (Каппа Коэна)**:
+  ```python
+  from sklearn.metrics import cohen_kappa_score
+  kappa = cohen_kappa_score(true_labels, predictions)
+  ```
+  - Учитывает случайное угадывание
+  - >0.8 - отличное согласие
+
+### 3. Визуализация ошибок:
+- Анализ примеров с наибольшей ошибкой:
+  ```python
+  # Для тестового DataLoader
+  model.eval()
+  with torch.no_grad():
+      for images, labels in test_dataloader:
+          outputs = model(images)
+          _, preds = torch.max(outputs, 1)
+          
+          # Поиск неверных предсказаний
+          incorrect = (preds != labels).nonzero()
+          for idx in incorrect:
+              img = images[idx].squeeze().permute(1,2,0).cpu()
+              plt.imshow(img)
+              plt.title(f'True: {class_names[labels[idx]]}\nPred: {class_names[preds[idx]]}')
+              plt.show()
+  ```
+
+### 4. Дополнительные метрики:
+- **ROC-AUC** (для многоклассовой):
+  ```python
+  from sklearn.metrics import roc_auc_score
+  from sklearn.preprocessing import OneHotEncoder
+
+  # Преобразование в one-hot
+  encoder = OneHotEncoder()
+  y_true_onehot = encoder.fit_transform(true_labels.reshape(-1,1)).toarray()
+  
+  # Предсказание вероятностей
+  probs = model.predict_proba(test_images) 
+  
+  # AUC (macro)
+  auc = roc_auc_score(y_true_onehot, probs, multi_class='ovr')
+  ```
+
+### 5. Интерпретация результатов:
+1. **Анализ дисбаланса**:
+   - Проверьте support в classification_report
+   - Для миноритарных классов смотрите recall
+
+2. **Проблемные классы**:
+   - Найдите классы с низким F1-score
+   - Проверьте в confusion matrix, с какими классами их путают
+
+3. **Ошибки модели**:
+   - Просмотрите примеры с ошибками визуально
+   - Проанализируйте, есть ли систематические ошибки (например, артефакты на изображениях)
+
+### Рекомендации для вашего случая:
+1. Учитывая дисбаланс классов (например, 3444 vs 102 примеров):
+   - Основной метрикой сделать **Weighted F1-score**
+   - Смотреть **Recall для миноритарных классов** ("Pterygium", "Central Serous")
+
+2. Для медицинских задач:
+   - **Recall (чувствительность) критически важен** - лучше ложные срабатывания, чем пропуск заболевания
+   - Рассчитайте метрики отдельно для каждого заболевания
+
+3. Дополнительные действия:
+   ```python
+   # Рассчет recall для каждого класса
+   from sklearn.metrics import recall_score
+   per_class_recall = recall_score(true_labels, predictions, average=None)
+   
+   for i, cls in enumerate(class_names):
+       print(f"{cls}: {per_class_recall[i]:.2f}")
+   ```
+
+4. Если модель путает определенные заболевания:
+   - Добавьте аугментацию для редких классов
+   - Используйте взвешенную функцию потерь:
+     ```python
+     class_weights = compute_class_weight('balanced', classes=np.unique(train_labels), y=train_labels)
+     criterion = nn.CrossEntropyLoss(weight=torch.tensor(class_weights).float().to(device))
+     ```
+
+Пример итогового анализа:
+1. Общая accuracy: 85.4%
+2. Weighted F1: 82.1%
+3. Наибольшие проблемы:
+   - Pterygium (recall 0.45) путается с Healthy
+   - Central Serous (precision 0.51) - много ложных срабатываний
+4. Рекомендации:
+   - Собрать больше данных для Pterygium
+   - Добавить transfer learning от моделей, обученных на медицинских изображениях
+   - Попробовать oversampling для миноритарных классов
+
+Эти метрики помогут не только оценить текущее качество модели, но и выявить направления для улучшения, что особенно важно в медицинской диагностике, где ошибки имеют серьезные последствия.
